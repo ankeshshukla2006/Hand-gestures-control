@@ -106,18 +106,29 @@
 
     #loading {
         position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 100%;
+        background: #0a0e1a;
+        z-index: 100;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
         color: #00ffaa;
         font-size: 24px;
         text-align: center;
-        z-index: 4;
-        background: rgba(10, 15, 30, 0.95);
-        padding: 30px;
-        border-radius: 15px;
-        border: 2px solid #00ffaa;
         backdrop-filter: blur(10px);
+        transition: opacity 0.5s ease;
+    }
+
+    #loadingContent {
+        background: rgba(10, 15, 30, 0.95);
+        padding: 40px;
+        border-radius: 20px;
+        border: 2px solid #00ffaa;
+        max-width: 500px;
     }
 
     .instructions {
@@ -165,9 +176,12 @@
 
 <body>
     <div id="loading">
-        <div>Loading Hand Tracking...</div>
-        <div style="font-size: 16px; margin-top: 10px;">Please allow camera access</div>
-        <div style="font-size: 14px; margin-top: 20px; color: #88ffcc;">Make sure you have good lighting</div>
+        <div id="loadingContent">
+            <div>Loading Hand Tracking...</div>
+            <div style="font-size: 16px; margin-top: 10px;">Please allow camera access</div>
+            <div style="font-size: 14px; margin-top: 20px; color: #88ffcc;">Make sure you have good lighting</div>
+            <div id="loadingProgress" style="margin-top: 20px; font-size: 14px; color: #00ffaa;">Starting...</div>
+        </div>
     </div>
 
     <video id="video" playsinline></video>
@@ -177,19 +191,19 @@
         <h3>Performance Stats</h3>
         <div class="stat-item">
             <span>FPS:</span>
-            <span class="stat-value" id="fpsCounter">60</span>
+            <span class="stat-value" id="fpsCounter">0</span>
         </div>
         <div class="stat-item">
             <span>Particles:</span>
-            <span class="stat-value" id="particleCounter">400</span>
+            <span class="stat-value" id="particleCounter">0</span>
         </div>
         <div class="stat-item">
             <span>Gesture Accuracy:</span>
-            <span class="stat-value" id="accuracyCounter">High</span>
+            <span class="stat-value" id="accuracyCounter">Low</span>
         </div>
         <div class="stat-item">
             <span>Tracking:</span>
-            <span class="stat-value" id="trackingStatus">Active</span>
+            <span class="stat-value" id="trackingStatus">Loading</span>
         </div>
         <div class="stat-item">
             <span>Pattern:</span>
@@ -214,7 +228,7 @@
 
     <div id="gestureDisplay">
         <span id="gestureIcon">🖐️</span>
-        <span id="gestureText">Show hand to camera</span>
+        <span id="gestureText">Initializing...</span>
     </div>
 
     <div id="performanceWarning">
@@ -226,101 +240,346 @@
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 
     <script>
+        // Global variables
+        let canvas, ctx;
+        let particles = [];
+        let handDetected = false;
+        let handPosition = { x: 0, y: 0 };
+        let currentGesture = null;
+        let activePattern = 'idle';
+        let gestureConfidence = 0;
+        let frameCount = 0;
+        let lastFpsUpdate = 0;
+        let fps = 0;
+        let lowFpsCount = 0;
+        let animationId = null;
+        let smoothedHandPosition = { x: 0, y: 0 };
+        const smoothingFactor = 0.2;
+        
         // Initialize everything after page loads
         window.addEventListener('load', init);
 
         async function init() {
-            const canvas = document.getElementById("canvas");
-            const ctx = canvas.getContext("2d", { 
+            console.log("Starting initialization...");
+            
+            // Setup canvas first
+            canvas = document.getElementById("canvas");
+            ctx = canvas.getContext("2d", { 
                 alpha: false,
-                desynchronized: true  // Better performance
+                desynchronized: true
             });
             
-            // Set canvas size
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             
-            // Optimize canvas rendering
-            canvas.style.willChange = 'transform';
+            // Update loading text
+            document.getElementById('loadingProgress').textContent = "Setting up canvas...";
             
-            // Performance monitoring
-            let frameCount = 0;
-            let lastFpsUpdate = 0;
-            let fps = 60;
-            let lowFpsCount = 0;
+            // Create particles immediately
+            createParticles(400);
             
-            // High-accuracy hand tracking variables
-            let handDetected = false;
-            let handPosition = { x: canvas.width / 2, y: canvas.height / 2 };
-            let handVelocity = { x: 0, y: 0 };
-            let previousHandPosition = { ...handPosition };
-            let currentGesture = null;
-            let activePattern = 'idle';
-            let gestureConfidence = 0;
+            // Start animation loop immediately
+            startAnimation();
             
-            // Smoothed values for better visual experience
-            const smoothedHandPosition = { x: canvas.width / 2, y: canvas.height / 2 };
-            const smoothingFactor = 0.2;
+            // Update loading text
+            document.getElementById('loadingProgress').textContent = "Animation started, initializing camera...";
             
-            // Update display elements
-            function updateDisplay() {
-                document.getElementById('particleCounter').textContent = particles.length;
-                document.getElementById('accuracyCounter').textContent = 
-                    gestureConfidence > 0.8 ? 'High' : gestureConfidence > 0.5 ? 'Medium' : 'Low';
-                document.getElementById('trackingStatus').textContent = 
-                    handDetected ? 'Active' : 'Searching...';
-                document.getElementById('trackingStatus').style.color = 
-                    handDetected ? '#00ffaa' : '#ffaa00';
-                document.getElementById('patternDisplay').textContent = activePattern;
+            // Try to initialize hand tracking
+            try {
+                await initHandTracking();
+                document.getElementById('loadingProgress').textContent = "Hand tracking ready!";
                 
-                // Update gesture display
-                const gestureIcon = document.getElementById('gestureIcon');
-                const gestureText = document.getElementById('gestureText');
+                // Hide loading screen after success
+                setTimeout(() => {
+                    document.getElementById('loading').style.opacity = '0';
+                    setTimeout(() => {
+                        document.getElementById('loading').style.display = 'none';
+                    }, 500);
+                }, 1000);
                 
-                if (handDetected && currentGesture) {
-                    const icons = {
-                        'Fist': '✊',
-                        'One finger': '👆',
-                        'Two fingers': '✌️',
-                        'Three fingers': '🤟',
-                        'Four fingers': '🖐️',
-                        'Five fingers': '👐'
-                    };
-                    gestureIcon.textContent = icons[currentGesture] || '🖐️';
-                    gestureText.textContent = currentGesture;
-                    gestureText.style.color = '#00ffaa';
-                } else {
-                    gestureIcon.textContent = '👋';
-                    gestureText.textContent = handDetected ? 'Processing...' : 'Show hand to camera';
-                    gestureText.style.color = handDetected ? '#ffaa00' : '#888888';
-                }
+            } catch (error) {
+                console.error("Hand tracking failed:", error);
+                document.getElementById('loadingProgress').textContent = "Camera not available, using mouse control";
+                document.getElementById('loadingProgress').style.color = "#ffaa00";
+                
+                // Setup mouse control as fallback
+                setupMouseControl();
+                
+                // Still hide loading screen
+                setTimeout(() => {
+                    document.getElementById('loading').style.opacity = '0';
+                    setTimeout(() => {
+                        document.getElementById('loading').style.display = 'none';
+                    }, 500);
+                }, 1500);
             }
             
-            // Initialize MediaPipe Hands with HIGH ACCURACY settings
+            // Update display
+            updateDisplay();
+        }
+        
+        function createParticles(count) {
+            particles = [];
+            for (let i = 0; i < count; i++) {
+                particles.push({
+                    x: Math.random() * canvas.width,
+                    y: Math.random() * canvas.height,
+                    vx: (Math.random() - 0.5) * 0.5,
+                    vy: (Math.random() - 0.5) * 0.5,
+                    size: Math.random() * 1.5 + 1,
+                    baseSpeed: 0.05 + Math.random() * 0.05,
+                    hue: Math.random() * 60 + 180,
+                    saturation: 70 + Math.random() * 30,
+                    lightness: 50 + Math.random() * 30,
+                    patternAngle: Math.random() * Math.PI * 2,
+                    patternRadius: 50 + Math.random() * 100,
+                    waveOffset: Math.random() * Math.PI * 2,
+                    phaseOffset: Math.random() * Math.PI * 2,
+                    gridAnchor: { 
+                        x: Math.floor(Math.random() * 20) * 30 + 15,
+                        y: Math.floor(Math.random() * 20) * 30 + 15
+                    }
+                });
+            }
+            document.getElementById('particleCounter').textContent = particles.length;
+        }
+        
+        function startAnimation() {
+            function animate(currentTime) {
+                // Calculate FPS
+                frameCount++;
+                if (currentTime - lastFpsUpdate >= 1000) {
+                    fps = Math.round(frameCount * 0.3 + fps * 0.7);
+                    frameCount = 0;
+                    lastFpsUpdate = currentTime;
+                    document.getElementById('fpsCounter').textContent = fps;
+                    
+                    // Performance warning
+                    if (fps < 30) {
+                        lowFpsCount++;
+                        if (lowFpsCount > 5) {
+                            document.getElementById('performanceWarning').style.display = 'block';
+                        }
+                    } else {
+                        lowFpsCount = 0;
+                        document.getElementById('performanceWarning').style.display = 'none';
+                    }
+                }
+                
+                // Clear canvas with trail effect
+                ctx.fillStyle = 'rgba(10, 14, 26, 0.1)';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Update particles
+                updateParticles();
+                
+                // Draw connections
+                drawConnections();
+                
+                // Draw particles
+                drawParticles();
+                
+                // Draw hand position indicator
+                if (handDetected) {
+                    drawHandIndicator();
+                }
+                
+                // Continue animation
+                animationId = requestAnimationFrame(animate);
+            }
+            
+            animationId = requestAnimationFrame(animate);
+        }
+        
+        function updateParticles() {
+            // If no hand detected, do gentle random motion
+            if (!handDetected) {
+                particles.forEach(p => {
+                    p.vx += (Math.random() - 0.5) * 0.02;
+                    p.vy += (Math.random() - 0.5) * 0.02;
+                    p.x += p.vx;
+                    p.y += p.vy;
+                    p.vx *= 0.96;
+                    p.vy *= 0.96;
+                    
+                    // Boundary handling
+                    if (p.x < -50) p.x = canvas.width + 50;
+                    if (p.x > canvas.width + 50) p.x = -50;
+                    if (p.y < -50) p.y = canvas.height + 50;
+                    if (p.y > canvas.height + 50) p.y = -50;
+                    
+                    // Update color
+                    p.hue = (p.hue + 0.2) % 360;
+                });
+                return;
+            }
+            
+            // Apply pattern behavior
+            const targetX = smoothedHandPosition.x || canvas.width / 2;
+            const targetY = smoothedHandPosition.y || canvas.height / 2;
+            
+            particles.forEach(p => {
+                switch(activePattern) {
+                    case 'attract':
+                        const dx = targetX - p.x;
+                        const dy = targetY - p.y;
+                        const dist = Math.sqrt(dx*dx + dy*dy) || 1;
+                        const force = 0.3 / (dist * 0.01 + 1);
+                        p.vx += (dx / dist) * force;
+                        p.vy += (dy / dist) * force;
+                        break;
+                        
+                    case 'follow':
+                        p.vx += (targetX - p.x) * 0.02;
+                        p.vy += (targetY - p.y) * 0.02;
+                        break;
+                        
+                    case 'circle':
+                        p.patternAngle += 0.04;
+                        const circleX = targetX + Math.cos(p.patternAngle + p.phaseOffset) * p.patternRadius;
+                        const circleY = targetY + Math.sin(p.patternAngle + p.phaseOffset) * p.patternRadius;
+                        p.vx += (circleX - p.x) * 0.1;
+                        p.vy += (circleY - p.y) * 0.1;
+                        break;
+                        
+                    case 'wave':
+                        p.patternAngle += 0.03;
+                        const waveX = targetX + Math.cos(p.waveOffset) * 200;
+                        const waveY = targetY + Math.sin(p.patternAngle * 2 + p.waveOffset) * 80;
+                        p.vx += (waveX - p.x) * 0.08;
+                        p.vy += (waveY - p.y) * 0.08;
+                        break;
+                        
+                    case 'spiral':
+                        p.patternAngle += 0.05;
+                        const spiralR = p.patternAngle * 2;
+                        const spiralX = targetX + Math.cos(p.patternAngle + p.phaseOffset) * spiralR;
+                        const spiralY = targetY + Math.sin(p.patternAngle + p.phaseOffset) * spiralR;
+                        p.vx += (spiralX - p.x) * 0.07;
+                        p.vy += (spiralY - p.y) * 0.07;
+                        break;
+                        
+                    case 'grid':
+                        const gridX = targetX + p.gridAnchor.x;
+                        const gridY = targetY + p.gridAnchor.y;
+                        p.vx += (gridX - p.x) * 0.15;
+                        p.vy += (gridY - p.y) * 0.15;
+                        break;
+                }
+                
+                // Apply velocity and friction
+                p.x += p.vx;
+                p.y += p.vy;
+                p.vx *= 0.96;
+                p.vy *= 0.96;
+                
+                // Boundary handling
+                if (p.x < -50) p.x = canvas.width + 50;
+                if (p.x > canvas.width + 50) p.x = -50;
+                if (p.y < -50) p.y = canvas.height + 50;
+                if (p.y > canvas.height + 50) p.y = -50;
+                
+                // Update color
+                p.hue = (p.hue + 0.2) % 360;
+            });
+        }
+        
+        function drawConnections() {
+            const connectionDistance = 100;
+            const connectionDistanceSq = connectionDistance * connectionDistance;
+            
+            for (let i = 0; i < particles.length; i++) {
+                const p1 = particles[i];
+                
+                for (let j = i + 1; j < Math.min(i + 20, particles.length); j++) {
+                    const p2 = particles[j];
+                    const dx = p1.x - p2.x;
+                    const dy = p1.y - p2.y;
+                    const distSq = dx * dx + dy * dy;
+                    
+                    if (distSq < connectionDistanceSq) {
+                        const distance = Math.sqrt(distSq);
+                        const alpha = 0.2 * (1 - distance / connectionDistance);
+                        
+                        ctx.strokeStyle = `rgba(100, 255, 200, ${alpha})`;
+                        ctx.lineWidth = 0.5;
+                        ctx.beginPath();
+                        ctx.moveTo(p1.x, p1.y);
+                        ctx.lineTo(p2.x, p2.y);
+                        ctx.stroke();
+                    }
+                }
+            }
+        }
+        
+        function drawParticles() {
+            particles.forEach(p => {
+                // Draw particle with gradient
+                const gradient = ctx.createRadialGradient(
+                    p.x, p.y, 0,
+                    p.x, p.y, p.size * 3
+                );
+                gradient.addColorStop(0, `hsla(${p.hue}, ${p.saturation}%, ${p.lightness + 20}%, 1)`);
+                gradient.addColorStop(1, `hsla(${p.hue}, ${p.saturation}%, ${p.lightness}%, 0)`);
+                
+                ctx.fillStyle = gradient;
+                ctx.beginPath();
+                ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+                ctx.fill();
+            });
+        }
+        
+        function drawHandIndicator() {
+            const targetX = smoothedHandPosition.x || canvas.width / 2;
+            const targetY = smoothedHandPosition.y || canvas.height / 2;
+            
+            // Outer glow
+            ctx.shadowColor = '#00ffaa';
+            ctx.shadowBlur = 20;
+            ctx.fillStyle = 'rgba(0, 255, 170, 0.3)';
+            ctx.beginPath();
+            ctx.arc(targetX, targetY, 25, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // Inner circle
+            ctx.shadowBlur = 10;
+            ctx.fillStyle = '#00ffaa';
+            ctx.beginPath();
+            ctx.arc(targetX, targetY, 8, 0, Math.PI * 2);
+            ctx.fill();
+            
+            ctx.shadowBlur = 0;
+            
+            // Draw current gesture indicator
+            if (currentGesture) {
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
+                ctx.font = 'bold 20px Arial';
+                ctx.textAlign = 'center';
+                ctx.fillText(currentGesture.charAt(0), targetX, targetY - 40);
+            }
+        }
+        
+        async function initHandTracking() {
+            const video = document.getElementById("video");
+            
             const hands = new Hands({
                 locateFile: (file) => {
                     return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
                 }
             });
             
-            // High accuracy configuration
             hands.setOptions({
                 maxNumHands: 1,
-                modelComplexity: 1, // Higher complexity for better accuracy
-                minDetectionConfidence: 0.7, // Higher threshold for better accuracy
+                modelComplexity: 1,
+                minDetectionConfidence: 0.7,
                 minTrackingConfidence: 0.7,
                 selfieMode: true
             });
             
-            // Hand results callback
             hands.onResults((results) => {
                 if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
                     handDetected = true;
                     const landmarks = results.multiHandLandmarks[0];
-                    const handScore = results.multiHandedness[0].score;
-                    
-                    // Calculate hand velocity for smoothing
-                    previousHandPosition = { ...handPosition };
                     
                     // Use multiple points for better accuracy
                     const wrist = landmarks[0];
@@ -333,19 +592,17 @@
                     };
                     
                     // Apply smoothing
-                    smoothedHandPosition.x += (handPosition.x - smoothedHandPosition.x) * smoothingFactor;
-                    smoothedHandPosition.y += (handPosition.y - smoothedHandPosition.y) * smoothingFactor;
+                    if (!smoothedHandPosition.x) {
+                        smoothedHandPosition = { ...handPosition };
+                    } else {
+                        smoothedHandPosition.x += (handPosition.x - smoothedHandPosition.x) * smoothingFactor;
+                        smoothedHandPosition.y += (handPosition.y - smoothedHandPosition.y) * smoothingFactor;
+                    }
                     
                     // Flip horizontally for mirror effect
                     smoothedHandPosition.x = canvas.width - smoothedHandPosition.x;
                     
-                    // Calculate velocity for particle interactions
-                    handVelocity = {
-                        x: smoothedHandPosition.x - previousHandPosition.x,
-                        y: smoothedHandPosition.y - previousHandPosition.y
-                    };
-                    
-                    // Detect gesture with high accuracy
+                    // Detect gesture
                     const { gesture, confidence } = detectHighAccuracyGesture(landmarks);
                     currentGesture = gesture;
                     gestureConfidence = confidence;
@@ -371,384 +628,154 @@
                 updateDisplay();
             });
             
-            // High-accuracy gesture detection
-            function detectHighAccuracyGesture(landmarks) {
-                // Finger tip indices
-                const tips = [4, 8, 12, 16, 20]; // Thumb, Index, Middle, Ring, Pinky
-                const joints = [2, 6, 10, 14, 18]; // Corresponding joints
-                
-                let extendedCount = 0;
-                let confidenceScore = 0;
-                
-                // Check each finger with improved logic
-                for (let i = 0; i < tips.length; i++) {
-                    const tip = landmarks[tips[i]];
-                    const joint = landmarks[joints[i]];
-                    
-                    // Thumb uses different logic (x-axis comparison)
-                    if (i === 0) {
-                        // For thumb, check if it's extended away from palm
-                        const thumbExtended = tip.x < joint.x - 0.08;
-                        if (thumbExtended) extendedCount++;
-                        confidenceScore += thumbExtended ? 0.2 : 0;
-                    } else {
-                        // For other fingers, check if tip is above joint (y-axis)
-                        const fingerExtended = tip.y < joint.y - 0.05;
-                        if (fingerExtended) extendedCount++;
-                        confidenceScore += fingerExtended ? 0.2 : 0;
-                    }
-                }
-                
-                // Map finger count to gestures
-                const gestureMap = [
-                    'Fist',      // 0 fingers
-                    'One finger', // 1 finger
-                    'Two fingers', // 2 fingers
-                    'Three fingers', // 3 fingers
-                    'Four fingers', // 4 fingers
-                    'Five fingers'  // 5 fingers
-                ];
-                
-                // Add confidence based on hand openness
-                const handOpenness = calculateHandOpenness(landmarks);
-                confidenceScore += handOpenness * 0.3;
-                
-                return {
-                    gesture: gestureMap[extendedCount] || 'Unknown',
-                    confidence: Math.min(confidenceScore, 1)
-                };
-            }
-            
-            // Calculate how open the hand is
-            function calculateHandOpenness(landmarks) {
-                const palmPoints = [0, 5, 9, 13, 17]; // Wrist and finger bases
-                let totalDistance = 0;
-                
-                for (let i = 0; i < palmPoints.length; i++) {
-                    for (let j = i + 1; j < palmPoints.length; j++) {
-                        const dx = landmarks[palmPoints[i]].x - landmarks[palmPoints[j]].x;
-                        const dy = landmarks[palmPoints[i]].y - landmarks[palmPoints[j]].y;
-                        totalDistance += Math.sqrt(dx * dx + dy * dy);
-                    }
-                }
-                
-                return Math.min(totalDistance / 2, 1);
-            }
-            
-            // Start camera with optimal settings
-            const video = document.getElementById("video");
             const camera = new Camera(video, {
                 onFrame: async () => {
                     try {
                         await hands.send({ image: video });
                     } catch (e) {
-                        console.log("Camera frame processing error:", e);
+                        console.log("Camera frame error:", e);
                     }
                 },
-                width: 640,  // Higher resolution for better accuracy
-                height: 480
+                width: 320,
+                height: 240
             });
             
-            // Start everything
-            try {
-                await camera.start();
-                document.getElementById("loading").style.display = "none";
-                console.log("Camera started successfully");
-            } catch (error) {
-                document.getElementById("loading").innerHTML = 
-                    "<div style='color:#ff5555'>Camera access denied</div>" +
-                    "<div style='font-size:14px;margin-top:10px;'>Please allow camera access and refresh</div>";
-                console.error("Camera error:", error);
-                return;
-            }
-            
-            /* ===== SMOOTH PARTICLE SYSTEM ===== */
-            class Particle {
-                constructor() {
-                    this.reset();
-                    this.uniqueId = Math.random();
-                    this.phaseOffset = Math.random() * Math.PI * 2;
-                    this.colorAngle = Math.random() * Math.PI * 2;
-                }
-                
-                reset() {
-                    this.x = Math.random() * canvas.width;
-                    this.y = Math.random() * canvas.height;
-                    this.vx = (Math.random() - 0.5) * 2;
-                    this.vy = (Math.random() - 0.5) * 2;
-                    this.size = Math.random() * 1.5 + 1;
-                    this.baseSpeed = 0.05 + Math.random() * 0.05;
-                    this.hue = Math.random() * 60 + 180; // Blue-green range
-                    this.saturation = 70 + Math.random() * 30;
-                    this.lightness = 50 + Math.random() * 30;
-                    this.patternAngle = Math.random() * Math.PI * 2;
-                    this.patternRadius = 50 + Math.random() * 100;
-                    this.waveOffset = Math.random() * Math.PI * 2;
-                    this.gridAnchor = { 
-                        x: Math.floor(Math.random() * 20) * 30 + 15,
-                        y: Math.floor(Math.random() * 20) * 30 + 15
-                    };
-                }
-                
-                update() {
-                    // Store previous position for trails
-                    this.px = this.x;
-                    this.py = this.y;
-                    
-                    // Apply current pattern
-                    this.applyPattern();
-                    
-                    // Apply velocity
-                    this.x += this.vx;
-                    this.y += this.vy;
-                    
-                    // Apply friction
-                    this.vx *= 0.96;
-                    this.vy *= 0.96;
-                    
-                    // Boundary handling with soft wrap-around
-                    if (this.x < -50) this.x = canvas.width + 50;
-                    if (this.x > canvas.width + 50) this.x = -50;
-                    if (this.y < -50) this.y = canvas.height + 50;
-                    if (this.y > canvas.height + 50) this.y = -50;
-                    
-                    // Update color
-                    this.colorAngle += 0.01;
-                    this.hue = (this.hue + 0.2) % 360;
-                }
-                
-                applyPattern() {
-                    if (!handDetected) {
-                        // Idle behavior - gentle random movement
-                        this.vx += (Math.random() - 0.5) * 0.02;
-                        this.vy += (Math.random() - 0.5) * 0.02;
-                        return;
-                    }
-                    
-                    const targetX = smoothedHandPosition.x;
-                    const targetY = smoothedHandPosition.y;
-                    
-                    switch(activePattern) {
-                        case 'attract': // Fist - strong attraction
-                            const dx = targetX - this.x;
-                            const dy = targetY - this.y;
-                            const dist = Math.sqrt(dx*dx + dy*dy) || 1;
-                            const force = 0.3 / (dist * 0.01 + 1);
-                            this.vx += (dx / dist) * force;
-                            this.vy += (dy / dist) * force;
-                            break;
-                            
-                        case 'follow': // One finger - smooth following
-                            const followDx = targetX - this.x;
-                            const followDy = targetY - this.y;
-                            this.vx += followDx * 0.02;
-                            this.vy += followDy * 0.02;
-                            break;
-                            
-                        case 'circle': // Two fingers - perfect circles
-                            this.patternAngle += 0.04;
-                            const radius = this.patternRadius;
-                            const circleX = targetX + Math.cos(this.patternAngle + this.phaseOffset) * radius;
-                            const circleY = targetY + Math.sin(this.patternAngle + this.phaseOffset) * radius;
-                            
-                            const circDx = circleX - this.x;
-                            const circDy = circleY - this.y;
-                            this.vx += circDx * 0.1;
-                            this.vy += circDy * 0.1;
-                            break;
-                            
-                        case 'wave': // Three fingers - wave pattern
-                            this.patternAngle += 0.03;
-                            const waveX = targetX + Math.cos(this.waveOffset) * 200;
-                            const waveY = targetY + Math.sin(this.patternAngle * 2 + this.waveOffset) * 80;
-                            
-                            const waveDx = waveX - this.x;
-                            const waveDy = waveY - this.y;
-                            this.vx += waveDx * 0.08;
-                            this.vy += waveDy * 0.08;
-                            break;
-                            
-                        case 'spiral': // Four fingers - spiral out
-                            this.patternAngle += 0.05;
-                            const spiralR = this.patternAngle * 2;
-                            const spiralX = targetX + Math.cos(this.patternAngle + this.phaseOffset) * spiralR;
-                            const spiralY = targetY + Math.sin(this.patternAngle + this.phaseOffset) * spiralR;
-                            
-                            const spiralDx = spiralX - this.x;
-                            const spiralDy = spiralY - this.y;
-                            this.vx += spiralDx * 0.07;
-                            this.vy += spiralDy * 0.07;
-                            break;
-                            
-                        case 'grid': // Five fingers - snap to grid
-                            const gridX = targetX + this.gridAnchor.x;
-                            const gridY = targetY + this.gridAnchor.y;
-                            
-                            const gridDx = gridX - this.x;
-                            const gridDy = gridY - this.y;
-                            this.vx += gridDx * 0.15;
-                            this.vy += gridDy * 0.15;
-                            break;
-                    }
-                }
-                
-                draw() {
-                    // Draw connection trail
-                    if (this.px && this.py) {
-                        const dist = Math.sqrt(Math.pow(this.x - this.px, 2) + Math.pow(this.y - this.py, 2));
-                        const alpha = Math.min(0.3, dist * 0.01);
-                        
-                        ctx.strokeStyle = `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, ${alpha})`;
-                        ctx.lineWidth = 0.8;
-                        ctx.beginPath();
-                        ctx.moveTo(this.px, this.py);
-                        ctx.lineTo(this.x, this.y);
-                        ctx.stroke();
-                    }
-                    
-                    // Draw particle with gradient
-                    const gradient = ctx.createRadialGradient(
-                        this.x, this.y, 0,
-                        this.x, this.y, this.size * 3
-                    );
-                    gradient.addColorStop(0, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness + 20}%, 1)`);
-                    gradient.addColorStop(1, `hsla(${this.hue}, ${this.saturation}%, ${this.lightness}%, 0)`);
-                    
-                    ctx.fillStyle = gradient;
-                    ctx.beginPath();
-                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            }
-            
-            // Create particles
-            const particles = [];
-            const PARTICLE_COUNT = 400; // Optimized for smooth performance
-            
-            for (let i = 0; i < PARTICLE_COUNT; i++) {
-                particles.push(new Particle());
-            }
-            
-            // Draw connections between nearby particles
-            function drawConnections() {
-                const connectionDistance = 100;
-                const connectionDistanceSq = connectionDistance * connectionDistance;
-                
-                for (let i = 0; i < particles.length; i++) {
-                    const p1 = particles[i];
-                    
-                    // Only check particles ahead to avoid duplicate connections
-                    for (let j = i + 1; j < Math.min(i + 20, particles.length); j++) {
-                        const p2 = particles[j];
-                        const dx = p1.x - p2.x;
-                        const dy = p1.y - p2.y;
-                        const distSq = dx * dx + dy * dy;
-                        
-                        if (distSq < connectionDistanceSq) {
-                            const distance = Math.sqrt(distSq);
-                            const alpha = 0.2 * (1 - distance / connectionDistance);
-                            
-                            ctx.strokeStyle = `rgba(100, 255, 200, ${alpha})`;
-                            ctx.lineWidth = 0.5;
-                            ctx.beginPath();
-                            ctx.moveTo(p1.x, p1.y);
-                            ctx.lineTo(p2.x, p2.y);
-                            ctx.stroke();
-                        }
-                    }
-                }
-            }
-            
-            /* ===== OPTIMIZED ANIMATION LOOP ===== */
-            function animate(currentTime) {
-                // Calculate FPS
-                frameCount++;
-                if (currentTime - lastFpsUpdate >= 1000) {
-                    fps = Math.round(frameCount * 0.3 + fps * 0.7); // Smooth FPS display
-                    frameCount = 0;
-                    lastFpsUpdate = currentTime;
-                    
-                    document.getElementById('fpsCounter').textContent = fps;
-                    
-                    // Performance warning
-                    if (fps < 30) {
-                        lowFpsCount++;
-                        if (lowFpsCount > 5) {
-                            document.getElementById('performanceWarning').style.display = 'block';
-                        }
-                    } else {
-                        lowFpsCount = 0;
-                        document.getElementById('performanceWarning').style.display = 'none';
-                    }
-                }
-                
-                // Clear canvas with trail effect
-                ctx.fillStyle = 'rgba(10, 14, 26, 0.1)';
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-                
-                // Update particles
-                for (let i = 0; i < particles.length; i++) {
-                    particles[i].update();
-                }
-                
-                // Draw connections first (behind particles)
-                drawConnections();
-                
-                // Draw particles
-                for (let i = 0; i < particles.length; i++) {
-                    particles[i].draw();
-                }
-                
-                // Draw hand position indicator
-                if (handDetected) {
-                    // Outer glow
-                    ctx.shadowColor = '#00ffaa';
-                    ctx.shadowBlur = 20;
-                    ctx.fillStyle = 'rgba(0, 255, 170, 0.3)';
-                    ctx.beginPath();
-                    ctx.arc(smoothedHandPosition.x, smoothedHandPosition.y, 25, 0, Math.PI * 2);
-                    ctx.fill();
-                    
-                    // Inner circle
-                    ctx.shadowBlur = 10;
-                    ctx.fillStyle = '#00ffaa';
-                    ctx.beginPath();
-                    ctx.arc(smoothedHandPosition.x, smoothedHandPosition.y, 8, 0, Math.PI * 2);
-                    ctx.fill();
-                    
-                    ctx.shadowBlur = 0;
-                    
-                    // Draw current gesture indicator
-                    if (currentGesture) {
-                        ctx.fillStyle = 'rgba(255, 255, 255, 0.9)';
-                        ctx.font = 'bold 20px Arial';
-                        ctx.textAlign = 'center';
-                        ctx.fillText(currentGesture.charAt(0), smoothedHandPosition.x, smoothedHandPosition.y - 40);
-                    }
-                }
-                
-                // Continue animation
-                requestAnimationFrame(animate);
-            }
-            
-            // Handle window resize
-            window.addEventListener('resize', () => {
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-                
-                // Reset particles to new bounds
-                particles.forEach(p => {
-                    p.x = Math.random() * canvas.width;
-                    p.y = Math.random() * canvas.height;
-                });
-            });
-            
-            // Prevent context menu on right-click
-            canvas.addEventListener('contextmenu', e => e.preventDefault());
-            
-            // Start animation
-            animate(0);
+            await camera.start();
         }
+        
+        function detectHighAccuracyGesture(landmarks) {
+            const tips = [4, 8, 12, 16, 20];
+            const joints = [2, 6, 10, 14, 18];
+            
+            let extendedCount = 0;
+            let confidenceScore = 0;
+            
+            for (let i = 0; i < tips.length; i++) {
+                const tip = landmarks[tips[i]];
+                const joint = landmarks[joints[i]];
+                
+                if (i === 0) {
+                    const thumbExtended = tip.x < joint.x - 0.08;
+                    if (thumbExtended) extendedCount++;
+                    confidenceScore += thumbExtended ? 0.2 : 0;
+                } else {
+                    const fingerExtended = tip.y < joint.y - 0.05;
+                    if (fingerExtended) extendedCount++;
+                    confidenceScore += fingerExtended ? 0.2 : 0;
+                }
+            }
+            
+            const gestureMap = [
+                'Fist',
+                'One finger',
+                'Two fingers',
+                'Three fingers',
+                'Four fingers',
+                'Five fingers'
+            ];
+            
+            const handOpenness = calculateHandOpenness(landmarks);
+            confidenceScore += handOpenness * 0.3;
+            
+            return {
+                gesture: gestureMap[extendedCount] || 'Unknown',
+                confidence: Math.min(confidenceScore, 1)
+            };
+        }
+        
+        function calculateHandOpenness(landmarks) {
+            const palmPoints = [0, 5, 9, 13, 17];
+            let totalDistance = 0;
+            
+            for (let i = 0; i < palmPoints.length; i++) {
+                for (let j = i + 1; j < palmPoints.length; j++) {
+                    const dx = landmarks[palmPoints[i]].x - landmarks[palmPoints[j]].x;
+                    const dy = landmarks[palmPoints[i]].y - landmarks[palmPoints[j]].y;
+                    totalDistance += Math.sqrt(dx * dx + dy * dy);
+                }
+            }
+            
+            return Math.min(totalDistance / 2, 1);
+        }
+        
+        function setupMouseControl() {
+            canvas.addEventListener('mousemove', (e) => {
+                handDetected = true;
+                smoothedHandPosition.x = e.clientX;
+                smoothedHandPosition.y = e.clientY;
+                currentGesture = "Mouse Control";
+                gestureConfidence = 0.5;
+                activePattern = 'follow';
+                updateDisplay();
+            });
+            
+            canvas.addEventListener('mouseleave', () => {
+                handDetected = false;
+                currentGesture = null;
+                activePattern = 'idle';
+                updateDisplay();
+            });
+            
+            canvas.addEventListener('touchmove', (e) => {
+                e.preventDefault();
+                handDetected = true;
+                smoothedHandPosition.x = e.touches[0].clientX;
+                smoothedHandPosition.y = e.touches[0].clientY;
+                currentGesture = "Touch Control";
+                gestureConfidence = 0.5;
+                activePattern = 'follow';
+                updateDisplay();
+            }, { passive: false });
+        }
+        
+        function updateDisplay() {
+            document.getElementById('particleCounter').textContent = particles.length;
+            document.getElementById('accuracyCounter').textContent = 
+                gestureConfidence > 0.8 ? 'High' : gestureConfidence > 0.5 ? 'Medium' : 'Low';
+            document.getElementById('trackingStatus').textContent = 
+                handDetected ? 'Active' : 'Searching';
+            document.getElementById('trackingStatus').style.color = 
+                handDetected ? '#00ffaa' : '#ffaa00';
+            document.getElementById('patternDisplay').textContent = activePattern;
+            
+            const gestureIcon = document.getElementById('gestureIcon');
+            const gestureText = document.getElementById('gestureText');
+            
+            if (handDetected && currentGesture) {
+                const icons = {
+                    'Fist': '✊',
+                    'One finger': '👆',
+                    'Two fingers': '✌️',
+                    'Three fingers': '🤟',
+                    'Four fingers': '🖐️',
+                    'Five fingers': '👐',
+                    'Mouse Control': '🖱️',
+                    'Touch Control': '👆'
+                };
+                gestureIcon.textContent = icons[currentGesture] || '🖐️';
+                gestureText.textContent = currentGesture;
+                gestureText.style.color = '#00ffaa';
+            } else {
+                gestureIcon.textContent = '👋';
+                gestureText.textContent = handDetected ? 'Processing...' : 'Show hand to camera';
+                gestureText.style.color = handDetected ? '#ffaa00' : '#888888';
+            }
+        }
+        
+        // Handle window resize
+        window.addEventListener('resize', () => {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            
+            // Reset particles to new bounds
+            particles.forEach(p => {
+                p.x = Math.random() * canvas.width;
+                p.y = Math.random() * canvas.height;
+            });
+        });
+        
+        // Prevent context menu on right-click
+        canvas.addEventListener('contextmenu', e => e.preventDefault());
     </script>
 </body>
 </html>
